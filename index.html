@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';">
+  <title>MAC Notepad ++</title>
+  <link rel="stylesheet" href="./node_modules/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="./node_modules/codemirror/theme/default.css">
+  <link rel="stylesheet" href="./node_modules/codemirror/addon/dialog/dialog.css">
+  <link rel="stylesheet" href="./node_modules/codemirror/addon/fold/foldgutter.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Menú personalizado -->
+    <div class="menu-bar">
+      <div class="menu-item">
+        <span>Archivo</span>
+        <div class="dropdown-content">
+          <div class="menu-option" id="new-file">Nuevo <span class="shortcut">Ctrl+N</span></div>
+          <div class="menu-option" id="open-file">Abrir <span class="shortcut">Ctrl+O</span></div>
+          <div class="menu-option" id="save-file">Guardar <span class="shortcut">Ctrl+S</span></div>
+          <div class="menu-option" id="save-as-file">Guardar como <span class="shortcut">Ctrl+Shift+S</span></div>
+          <div class="separator"></div>
+          <div class="menu-option" id="close-tab">Cerrar pestaña <span class="shortcut">Ctrl+W</span></div>
+          <div class="separator"></div>
+          <div class="menu-option" id="exit-app">Salir <span class="shortcut">Ctrl+Q</span></div>
+        </div>
+      </div>
+      <div class="menu-item">
+        <span>Editar</span>
+        <div class="dropdown-content">
+          <div class="menu-option" id="undo">Deshacer <span class="shortcut">Ctrl+Z</span></div>
+          <div class="menu-option" id="redo">Rehacer <span class="shortcut">Ctrl+Y</span></div>
+          <div class="separator"></div>
+          <div class="menu-option" id="cut">Cortar <span class="shortcut">Ctrl+X</span></div>
+          <div class="menu-option" id="copy">Copiar <span class="shortcut">Ctrl+C</span></div>
+          <div class="menu-option" id="paste">Pegar <span class="shortcut">Ctrl+V</span></div>
+          <div class="separator"></div>
+          <div class="menu-option" id="select-all">Seleccionar todo <span class="shortcut">Ctrl+A</span></div>
+        </div>
+      </div>
+      <div class="menu-item">
+        <span>Ver</span>
+        <div class="dropdown-content">
+          <div class="menu-option" id="toggle-wrap">Ajuste de línea</div>
+          <div class="separator"></div>
+          <div class="menu-option" id="zoom-in">Ampliar <span class="shortcut">Ctrl++</span></div>
+          <div class="menu-option" id="zoom-out">Reducir <span class="shortcut">Ctrl+-</span></div>
+          <div class="menu-option" id="zoom-reset">Restablecer zoom <span class="shortcut">Ctrl+0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Barra de pestañas -->
+    <div class="tabs-container">
+      <div class="tabs" id="tabs-bar">
+        <!-- Las pestañas se generarán dinámicamente -->
+      </div>
+      <div class="tab-actions">
+        <button id="new-tab-button" title="Nueva pestaña">+</button>
+      </div>
+    </div>
+
+    <div class="editor-container">
+      <div id="editors-container">
+        <!-- Los editores se generarán dinámicamente -->
+      </div>
+      <div class="status-bar">
+        <span id="current-file">Nuevo documento</span>
+        <span id="line-column">Línea: 1, Columna: 1</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
