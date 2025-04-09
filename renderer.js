@@ -1,5 +1,6 @@
 const { ipcRenderer } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const CodeMirror = require('codemirror');
 
 // Importar modos de lenguaje para resaltado de sintaxis
@@ -60,6 +61,9 @@ let activeTabId = null;
 let draggedTab = null;
 let draggedTabIndex = -1;
 
+// Flag para controlar si ya se está restaurando la sesión
+let isRestoringSession = false;
+
 // Clase Tab para gestionar las pestañas
 class Tab {
   constructor(id, title, filePath = null) {
@@ -69,7 +73,7 @@ class Tab {
     this.editor = null;
     this.mode = 'text/plain';
     this.isUnsaved = false;
-    
+
     this.createTabElement();
     this.createEditorElement();
     this.initializeEditor();
@@ -80,33 +84,33 @@ class Tab {
     tabElement.className = 'tab';
     tabElement.setAttribute('data-tab-id', this.id);
     tabElement.setAttribute('draggable', 'true');
-    
+
     const titleElement = document.createElement('div');
     titleElement.className = 'tab-title';
     titleElement.textContent = this.title;
-    
+
     const closeElement = document.createElement('div');
     closeElement.className = 'tab-close';
     closeElement.innerHTML = '&times;';
-    closeElement.addEventListener('click', (e) => {
+    closeElement.addEventListener('click', e => {
       e.stopPropagation();
       closeTab(this.id);
     });
-    
+
     tabElement.appendChild(titleElement);
     tabElement.appendChild(closeElement);
-    
+
     tabElement.addEventListener('click', () => {
       activateTab(this.id);
     });
-    
+
     // Eventos para drag and drop
-    tabElement.addEventListener('dragstart', (e) => {
+    tabElement.addEventListener('dragstart', e => {
       draggedTab = this;
       draggedTabIndex = tabs.indexOf(this);
       e.dataTransfer.setData('text/plain', this.id);
       tabElement.classList.add('dragging');
-      
+
       // Establecer una imagen personalizada para arrastrar (opcional)
       const dragImage = tabElement.cloneNode(true);
       dragImage.style.position = 'absolute';
@@ -117,37 +121,37 @@ class Tab {
         document.body.removeChild(dragImage);
       }, 0);
     });
-    
-    tabElement.addEventListener('dragover', (e) => {
+
+    tabElement.addEventListener('dragover', e => {
       e.preventDefault();
       tabElement.classList.add('drag-over');
     });
-    
+
     tabElement.addEventListener('dragleave', () => {
       tabElement.classList.remove('drag-over');
     });
-    
-    tabElement.addEventListener('drop', (e) => {
+
+    tabElement.addEventListener('drop', e => {
       e.preventDefault();
       tabElement.classList.remove('drag-over');
-      
+
       if (draggedTab && draggedTab.id !== this.id) {
         const targetIndex = tabs.indexOf(this);
         reorderTabs(draggedTabIndex, targetIndex);
       }
     });
-    
+
     tabElement.addEventListener('dragend', () => {
       tabElement.classList.remove('dragging');
       draggedTab = null;
       draggedTabIndex = -1;
-      
+
       // Limpiar clases de drag-over de todas las pestañas
       document.querySelectorAll('.tab').forEach(tab => {
         tab.classList.remove('drag-over');
       });
     });
-    
+
     tabsBar.appendChild(tabElement);
     this.tabElement = tabElement;
   }
@@ -156,7 +160,7 @@ class Tab {
     const editorWrapper = document.createElement('div');
     editorWrapper.className = 'editor-wrapper';
     editorWrapper.setAttribute('data-editor-id', this.id);
-    
+
     editorsContainer.appendChild(editorWrapper);
     this.editorElement = editorWrapper;
   }
@@ -173,26 +177,27 @@ class Tab {
       indentUnit: 2,
       tabSize: 2,
       foldGutter: true,
-      gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter']
+      gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
     });
-    
+
     this.editor.setSize('100%', '100%');
-    
+
     // Escuchar cambios para marcar como no guardado
     this.editor.on('change', () => {
-      if (!this.isUnsaved) {
+      // No marcar como no guardado durante la restauración de sesión
+      if (!isRestoringSession && !this.isUnsaved) {
         this.isUnsaved = true;
         this.updateTabElement();
       }
     });
-    
+
     // Actualizar posición del cursor cuando esta pestaña está activa
     this.editor.on('cursorActivity', () => {
       if (activeTabId === this.id) {
         updateCursorPosition(this.editor);
       }
     });
-    
+
     // Aplicar el zoom actual
     const cmElement = this.editorElement.querySelector('.CodeMirror');
     if (cmElement && currentZoom !== 1) {
@@ -205,7 +210,7 @@ class Tab {
       this.editor.setValue(content || '');
       this.isUnsaved = false;
       this.updateTabElement();
-      
+
       // Forzar un refresco del editor
       setTimeout(() => {
         this.editor.refresh();
@@ -222,7 +227,7 @@ class Tab {
     this.title = filePath ? path.basename(filePath) : 'Sin título';
     this.isUnsaved = false;
     this.updateTabElement();
-    
+
     if (filePath) {
       const extension = path.extname(filePath).toLowerCase().substring(1);
       this.setMode(detectMode(extension));
@@ -239,7 +244,7 @@ class Tab {
   updateTabElement() {
     const titleElement = this.tabElement.querySelector('.tab-title');
     titleElement.textContent = this.title;
-    
+
     if (this.isUnsaved) {
       this.tabElement.classList.add('unsaved');
     } else {
@@ -251,11 +256,20 @@ class Tab {
     this.isUnsaved = false;
     this.updateTabElement();
   }
-  
+
   refresh() {
     if (this.editor) {
       this.editor.refresh();
     }
+  }
+
+  // Método para exportar la información del tab para guardar la sesión
+  toSessionData() {
+    return {
+      filePath: this.filePath,
+      mode: this.mode,
+      title: this.title,
+    };
   }
 }
 
@@ -263,16 +277,16 @@ class Tab {
 function reorderTabs(fromIndex, toIndex) {
   // Guardar la pestaña que se mueve
   const tab = tabs[fromIndex];
-  
+
   // Quitar la pestaña del array original
   tabs.splice(fromIndex, 1);
-  
+
   // Insertar la pestaña en la nueva posición
   tabs.splice(toIndex, 0, tab);
-  
+
   // Actualizar el DOM
   renderTabsOrder();
-  
+
   // Activar la pestaña que fue movida
   activateTab(tab.id);
 }
@@ -283,12 +297,12 @@ function renderTabsOrder() {
   while (tabsBar.firstChild) {
     tabsBar.removeChild(tabsBar.firstChild);
   }
-  
+
   // Volver a agregar las pestañas en el nuevo orden
   tabs.forEach(tab => {
     tabsBar.appendChild(tab.tabElement);
   });
-  
+
   // Volver a establecer la pestaña activa
   if (activeTabId) {
     const activeTabElement = document.querySelector(`.tab[data-tab-id="${activeTabId}"]`);
@@ -296,23 +310,88 @@ function renderTabsOrder() {
       activeTabElement.classList.add('active');
     }
   }
+
+  // Guardar el estado actual en la sesión
+  saveSessionData();
+}
+
+// Guardar los datos de la sesión
+function saveSessionData() {
+  // Recopilar información de pestañas abiertas con archivos guardados
+  const openFiles = tabs
+    .filter(tab => tab.filePath) // Solo guardar pestañas con archivos guardados
+    .map(tab => tab.toSessionData());
+
+  // Enviar al proceso principal para guardar
+  ipcRenderer.send('save-session', openFiles);
+}
+
+// Función para restaurar una sesión
+function restoreSession(files) {
+  isRestoringSession = true;
+
+  // Si hay pestañas abiertas (la pestaña de inicio), cerrarlas
+  if (tabs.length === 1 && !tabs[0].filePath && !tabs[0].isUnsaved) {
+    // Cerrar la pestaña vacía inicial
+    closeTab(tabs[0].id, true); // true indica que es una operación silenciosa
+  }
+
+  // Abrir cada archivo de la sesión anterior
+  if (files && files.length > 0) {
+    const openPromises = files.map(file => {
+      return new Promise((resolve, reject) => {
+        if (file.filePath && fs.existsSync(file.filePath)) {
+          fs.readFile(file.filePath, 'utf8', (err, data) => {
+            if (err) {
+              console.error(`Error al leer el archivo ${file.filePath}:`, err);
+              reject(err);
+            } else {
+              const tab = createNewTab(file.title || path.basename(file.filePath), file.filePath, data);
+              if (file.mode) {
+                tab.setMode(file.mode);
+              }
+              resolve();
+            }
+          });
+        } else {
+          // Si el archivo ya no existe, simplemente continuar
+          resolve();
+        }
+      });
+    });
+
+    Promise.all(openPromises).then(() => {
+      // Activar la primera pestaña si hay pestañas
+      if (tabs.length > 0) {
+        activateTab(tabs[0].id);
+      } else {
+        // Si no se pudo restaurar ningún archivo, crear una nueva pestaña
+        createNewTab();
+      }
+      isRestoringSession = false;
+    });
+  } else {
+    // Si no hay archivos para restaurar, crear una nueva pestaña
+    createNewTab();
+    isRestoringSession = false;
+  }
 }
 
 // Función para detectar el modo por la extensión del archivo
 function detectMode(extension) {
   const modeMap = {
-    'js': 'javascript',
-    'json': 'javascript',
-    'html': 'htmlmixed',
-    'htm': 'htmlmixed',
-    'xml': 'xml',
-    'css': 'css',
-    'md': 'markdown',
-    'markdown': 'markdown',
-    'py': 'python',
-    'txt': 'text/plain'
+    js: 'javascript',
+    json: 'javascript',
+    html: 'htmlmixed',
+    htm: 'htmlmixed',
+    xml: 'xml',
+    css: 'css',
+    md: 'markdown',
+    markdown: 'markdown',
+    py: 'python',
+    txt: 'text/plain',
   };
-  
+
   return modeMap[extension] || 'text/plain';
 }
 
@@ -328,14 +407,19 @@ function updateCursorPosition(editor) {
 function createNewTab(title = 'Sin título', filePath = null, content = '') {
   const id = Date.now().toString();
   const tab = new Tab(id, title, filePath);
-  
+
   if (content || content === '') {
     tab.setContent(content);
   }
-  
+
   tabs.push(tab);
   activateTab(id);
-  
+
+  // Guardar el estado de la sesión si no estamos restaurando
+  if (!isRestoringSession) {
+    saveSessionData();
+  }
+
   return tab;
 }
 
@@ -345,29 +429,29 @@ function activateTab(id) {
   document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.remove('active');
   });
-  
+
   document.querySelectorAll('.editor-wrapper').forEach(editor => {
     editor.classList.remove('active');
   });
-  
+
   // Activar la pestaña seleccionada
   const tabElement = document.querySelector(`.tab[data-tab-id="${id}"]`);
   const editorElement = document.querySelector(`.editor-wrapper[data-editor-id="${id}"]`);
-  
+
   if (tabElement && editorElement) {
     tabElement.classList.add('active');
     editorElement.classList.add('active');
     activeTabId = id;
-    
+
     const tab = getTabById(id);
     if (tab) {
       currentFileElement.textContent = tab.filePath || 'Nuevo documento';
-      
+
       // Refrescar el editor para asegurar que se muestra correctamente
       setTimeout(() => {
         tab.refresh();
         updateCursorPosition(tab.editor);
-        
+
         // Enfocar el editor
         if (tab.editor) {
           tab.editor.focus();
@@ -378,10 +462,10 @@ function activateTab(id) {
 }
 
 // Cerrar una pestaña
-function closeTab(id) {
+function closeTab(id, silent = false) {
   const tab = getTabById(id);
-  
-  if (tab && tab.isUnsaved) {
+
+  if (tab && tab.isUnsaved && !silent) {
     // Preguntar si se desea guardar antes de cerrar
     const shouldSave = confirm(`¿Desea guardar los cambios en "${tab.title}" antes de cerrar?`);
     if (shouldSave) {
@@ -390,22 +474,22 @@ function closeTab(id) {
       return;
     }
   }
-  
+
   // Encontrar el índice de la pestaña
   const tabIndex = tabs.findIndex(t => t.id === id);
-  
+
   // Eliminar elementos DOM
   const tabElement = document.querySelector(`.tab[data-tab-id="${id}"]`);
   const editorElement = document.querySelector(`.editor-wrapper[data-editor-id="${id}"]`);
-  
+
   if (tabElement) tabElement.remove();
   if (editorElement) editorElement.remove();
-  
+
   // Eliminar de la lista de pestañas
   tabs = tabs.filter(t => t.id !== id);
-  
+
   // Si era la pestaña activa, activar otra
-  if (activeTabId === id) {
+  if (activeTabId === id && !silent) {
     if (tabs.length > 0) {
       // Activar la pestaña que estaba a la derecha o izquierda
       const newIndex = Math.min(tabIndex, tabs.length - 1);
@@ -414,6 +498,11 @@ function closeTab(id) {
       // Si no hay más pestañas, crear una nueva
       createNewTab();
     }
+  }
+
+  // Guardar el estado actual en la sesión si no es una operación silenciosa
+  if (!silent) {
+    saveSessionData();
   }
 }
 
@@ -441,12 +530,23 @@ function saveTab(tab) {
 
 // Abrir un archivo en una nueva pestaña
 function openFileInNewTab(filePath, content) {
+  // Verificar si el archivo ya está abierto
+  const existingTab = tabs.find(tab => tab.filePath === filePath);
+  if (existingTab) {
+    // Si ya está abierto, simplemente activarlo
+    activateTab(existingTab.id);
+    return;
+  }
+
   const title = path.basename(filePath);
   const tab = createNewTab(title, filePath, content);
-  
+
   // Detectar el modo basado en la extensión
   const extension = path.extname(filePath).toLowerCase().substring(1);
   tab.setMode(detectMode(extension));
+
+  // Guardar la sesión después de abrir el archivo
+  saveSessionData();
 }
 
 // Funciones para el zoom
@@ -589,6 +689,8 @@ ipcRenderer.on('file-saved', (event, filePath) => {
   if (activeTab) {
     activeTab.setFilePath(filePath);
     activeTab.markAsSaved();
+    // Guardar la sesión después de guardar un archivo
+    saveSessionData();
   }
 });
 
@@ -604,20 +706,49 @@ ipcRenderer.on('check-unsaved-tabs', () => {
   }
 });
 
+// Manejar la verificación de pestañas sin guardar cuando se cierra la aplicación
+ipcRenderer.on('check-unsaved-tabs-for-close', event => {
+  const unsavedTabs = tabs.filter(tab => tab.isUnsaved);
+  if (unsavedTabs.length > 0) {
+    const message = `Hay ${unsavedTabs.length} archivo(s) sin guardar. ¿Desea salir sin guardar?`;
+    if (confirm(message)) {
+      // Guardar la sesión antes de salir
+      saveSessionData();
+      ipcRenderer.send('confirm-close');
+    }
+  } else {
+    // Guardar la sesión y confirmar cierre
+    saveSessionData();
+    ipcRenderer.send('confirm-close');
+  }
+});
+
+// Manejar petición para guardar sesión antes de salir
+ipcRenderer.on('prepare-to-exit', () => {
+  // Guardar la sesión y confirmar salida
+  saveSessionData();
+  ipcRenderer.send('confirm-close');
+});
+
+// Restaurar la sesión anterior
+ipcRenderer.on('restore-session', (event, files) => {
+  restoreSession(files);
+});
+
 // Atajos de teclado
-document.addEventListener('keydown', (e) => {
+document.addEventListener('keydown', e => {
   // Ctrl+N: Nueva pestaña
   if (e.ctrlKey && e.key === 'n') {
     e.preventDefault();
     createNewTab();
   }
-  
+
   // Ctrl+O: Abrir archivo
   if (e.ctrlKey && e.key === 'o') {
     e.preventDefault();
     ipcRenderer.send('open-file-dialog');
   }
-  
+
   // Ctrl+S: Guardar archivo
   if (e.ctrlKey && e.key === 's' && !e.shiftKey) {
     e.preventDefault();
@@ -626,13 +757,13 @@ document.addEventListener('keydown', (e) => {
       saveTab(activeTab);
     }
   }
-  
+
   // Ctrl+Shift+S: Guardar como
   if (e.ctrlKey && e.shiftKey && (e.key === 'S' || e.key === 's')) {
     e.preventDefault();
     ipcRenderer.send('save-file-as');
   }
-  
+
   // Ctrl+W: Cerrar pestaña
   if (e.ctrlKey && e.key === 'w') {
     e.preventDefault();
@@ -640,25 +771,25 @@ document.addEventListener('keydown', (e) => {
       closeTab(activeTabId);
     }
   }
-  
+
   // Ctrl++: Ampliar zoom
   if (e.ctrlKey && (e.key === '+' || e.key === '=')) {
     e.preventDefault();
     zoomIn();
   }
-  
+
   // Ctrl+-: Reducir zoom
   if (e.ctrlKey && e.key === '-') {
     e.preventDefault();
     zoomOut();
   }
-  
+
   // Ctrl+0: Restablecer zoom
   if (e.ctrlKey && e.key === '0') {
     e.preventDefault();
     resetZoom();
   }
-  
+
   // Ctrl+Tab: Cambiar a la siguiente pestaña
   if (e.ctrlKey && e.key === 'Tab') {
     e.preventDefault();
@@ -668,7 +799,7 @@ document.addEventListener('keydown', (e) => {
       activateTab(tabs[nextIndex].id);
     }
   }
-  
+
   // Ctrl+Shift+Tab: Cambiar a la pestaña anterior
   if (e.ctrlKey && e.shiftKey && e.key === 'Tab') {
     e.preventDefault();
@@ -680,5 +811,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Inicializar con una pestaña
+// Inicializar solo con una pestaña si no hay sesión para restaurar
+// (la sesión se restaurará desde el evento 'restore-session')
 createNewTab();
