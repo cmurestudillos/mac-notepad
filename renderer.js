@@ -3,15 +3,13 @@ const path = require('path');
 const fs = require('fs');
 const CodeMirror = require('codemirror');
 
-// Importar modos de lenguaje para resaltado de sintaxis
+// Importar modos de lenguaje y addons de CodeMirror
 require('codemirror/mode/javascript/javascript');
 require('codemirror/mode/xml/xml');
 require('codemirror/mode/css/css');
 require('codemirror/mode/htmlmixed/htmlmixed');
 require('codemirror/mode/markdown/markdown');
 require('codemirror/mode/python/python');
-
-// Importar addons
 require('codemirror/addon/edit/matchbrackets');
 require('codemirror/addon/edit/closebrackets');
 require('codemirror/addon/search/search');
@@ -63,6 +61,18 @@ let draggedTabIndex = -1;
 
 // Flag para controlar si ya se está restaurando la sesión
 let isRestoringSession = false;
+
+// Flag para saber si ya se creó la primera pestaña
+let initialTabCreated = false;
+
+// Debug flag
+const DEBUG = true;
+
+function debug(...args) {
+  if (DEBUG) {
+    console.log(...args);
+  }
+}
 
 // Clase Tab para gestionar las pestañas
 class Tab {
@@ -317,10 +327,15 @@ function renderTabsOrder() {
 
 // Guardar los datos de la sesión
 function saveSessionData() {
+  // No guardar la sesión durante la restauración
+  if (isRestoringSession) return;
+
   // Recopilar información de pestañas abiertas con archivos guardados
   const openFiles = tabs
     .filter(tab => tab.filePath) // Solo guardar pestañas con archivos guardados
     .map(tab => tab.toSessionData());
+
+  debug('Guardando sesión con archivos:', openFiles);
 
   // Enviar al proceso principal para guardar
   ipcRenderer.send('save-session', openFiles);
@@ -328,50 +343,69 @@ function saveSessionData() {
 
 // Función para restaurar una sesión
 function restoreSession(files) {
+  debug('Restaurando sesión con archivos:', files);
   isRestoringSession = true;
 
-  // Si hay pestañas abiertas (la pestaña de inicio), cerrarlas
-  if (tabs.length === 1 && !tabs[0].filePath && !tabs[0].isUnsaved) {
+  // Si hay pestañas abiertas (la pestaña de inicio) que no tienen contenido, cerrarlas
+  if (tabs.length === 1 && !tabs[0].filePath && !tabs[0].isUnsaved && tabs[0].getContent() === '') {
+    debug('Cerrando pestaña inicial vacía');
     // Cerrar la pestaña vacía inicial
     closeTab(tabs[0].id, true); // true indica que es una operación silenciosa
   }
 
   // Abrir cada archivo de la sesión anterior
   if (files && files.length > 0) {
+    debug(`Intentando abrir ${files.length} archivos`);
+
+    // Crear una promesa para cada archivo
     const openPromises = files.map(file => {
       return new Promise((resolve, reject) => {
         if (file.filePath && fs.existsSync(file.filePath)) {
+          debug(`Leyendo archivo: ${file.filePath}`);
           fs.readFile(file.filePath, 'utf8', (err, data) => {
             if (err) {
-              console.error(`Error al leer el archivo ${file.filePath}:`, err);
+              debug(`Error al leer el archivo ${file.filePath}:`, err);
               reject(err);
             } else {
+              debug(`Archivo leído con éxito: ${file.filePath}`);
               const tab = createNewTab(file.title || path.basename(file.filePath), file.filePath, data);
               if (file.mode) {
                 tab.setMode(file.mode);
               }
-              resolve();
+              resolve(tab);
             }
           });
         } else {
-          // Si el archivo ya no existe, simplemente continuar
-          resolve();
+          debug(`Archivo no encontrado o ruta inválida: ${file.filePath}`);
+          resolve(null); // Resolver con null si el archivo no existe
         }
       });
     });
 
-    Promise.all(openPromises).then(() => {
-      // Activar la primera pestaña si hay pestañas
-      if (tabs.length > 0) {
-        activateTab(tabs[0].id);
-      } else {
-        // Si no se pudo restaurar ningún archivo, crear una nueva pestaña
+    // Esperar a que todos los archivos se abran
+    Promise.all(openPromises)
+      .then(tabs => {
+        const validTabs = tabs.filter(tab => tab !== null);
+        debug(`Se han abierto ${validTabs.length} archivos de ${files.length}`);
+
+        // Activar la primera pestaña si hay pestañas
+        if (validTabs.length > 0) {
+          activateTab(validTabs[0].id);
+        } else {
+          // Si no se pudo restaurar ningún archivo, crear una nueva pestaña
+          debug('No se pudo restaurar ningún archivo, creando nueva pestaña');
+          createNewTab();
+        }
+        isRestoringSession = false;
+      })
+      .catch(error => {
+        debug('Error al restaurar la sesión:', error);
+        isRestoringSession = false;
         createNewTab();
-      }
-      isRestoringSession = false;
-    });
+      });
   } else {
     // Si no hay archivos para restaurar, crear una nueva pestaña
+    debug('No hay archivos en la sesión para restaurar');
     createNewTab();
     isRestoringSession = false;
   }
@@ -408,7 +442,7 @@ function createNewTab(title = 'Sin título', filePath = null, content = '') {
   const id = Date.now().toString();
   const tab = new Tab(id, title, filePath);
 
-  if (content || content === '') {
+  if (content !== undefined) {
     tab.setContent(content);
   }
 
@@ -419,6 +453,9 @@ function createNewTab(title = 'Sin título', filePath = null, content = '') {
   if (!isRestoringSession) {
     saveSessionData();
   }
+
+  // Marcar que ya se ha creado la primera pestaña
+  initialTabCreated = true;
 
   return tab;
 }
@@ -465,7 +502,9 @@ function activateTab(id) {
 function closeTab(id, silent = false) {
   const tab = getTabById(id);
 
-  if (tab && tab.isUnsaved && !silent) {
+  if (!tab) return;
+
+  if (tab.isUnsaved && !silent) {
     // Preguntar si se desea guardar antes de cerrar
     const shouldSave = confirm(`¿Desea guardar los cambios en "${tab.title}" antes de cerrar?`);
     if (shouldSave) {
@@ -501,7 +540,7 @@ function closeTab(id, silent = false) {
   }
 
   // Guardar el estado actual en la sesión si no es una operación silenciosa
-  if (!silent) {
+  if (!silent && !isRestoringSession) {
     saveSessionData();
   }
 }
@@ -604,10 +643,10 @@ exitAppBtn.addEventListener('click', () => {
   if (unsavedTabs.length > 0) {
     const message = `Hay ${unsavedTabs.length} archivo(s) sin guardar. ¿Desea salir sin guardar?`;
     if (confirm(message)) {
-      ipcRenderer.send('confirm-exit');
+      ipcRenderer.send('confirm-close');
     }
   } else {
-    ipcRenderer.send('confirm-exit');
+    ipcRenderer.send('confirm-close');
   }
 });
 
@@ -694,45 +733,30 @@ ipcRenderer.on('file-saved', (event, filePath) => {
   }
 });
 
-ipcRenderer.on('check-unsaved-tabs', () => {
-  const unsavedTabs = tabs.filter(tab => tab.isUnsaved);
-  if (unsavedTabs.length > 0) {
-    const message = `Hay ${unsavedTabs.length} archivo(s) sin guardar. ¿Desea salir sin guardar?`;
-    if (confirm(message)) {
-      ipcRenderer.send('confirm-exit');
-    }
-  } else {
-    ipcRenderer.send('confirm-exit');
-  }
-});
-
-// Manejar la verificación de pestañas sin guardar cuando se cierra la aplicación
-ipcRenderer.on('check-unsaved-tabs-for-close', event => {
-  const unsavedTabs = tabs.filter(tab => tab.isUnsaved);
-  if (unsavedTabs.length > 0) {
-    const message = `Hay ${unsavedTabs.length} archivo(s) sin guardar. ¿Desea salir sin guardar?`;
-    if (confirm(message)) {
-      // Guardar la sesión antes de salir
-      saveSessionData();
-      ipcRenderer.send('confirm-close');
-    }
-  } else {
-    // Guardar la sesión y confirmar cierre
-    saveSessionData();
-    ipcRenderer.send('confirm-close');
-  }
-});
-
-// Manejar petición para guardar sesión antes de salir
-ipcRenderer.on('prepare-to-exit', () => {
-  // Guardar la sesión y confirmar salida
-  saveSessionData();
-  ipcRenderer.send('confirm-close');
-});
-
-// Restaurar la sesión anterior
+// Restaurar la sesión anterior cuando se recibe el evento desde el proceso principal
 ipcRenderer.on('restore-session', (event, files) => {
+  debug('Evento restore-session recibido con:', files);
   restoreSession(files);
+});
+
+// Preparar para cerrar - guardar sesión y luego confirmar cierre
+ipcRenderer.on('prepare-for-close', () => {
+  debug('Preparando para cerrar la aplicación');
+
+  // Verificar si hay pestañas sin guardar
+  const unsavedTabs = tabs.filter(tab => tab.isUnsaved);
+  if (unsavedTabs.length > 0) {
+    const message = `Hay ${unsavedTabs.length} archivo(s) sin guardar. ¿Desea salir sin guardar?`;
+    if (!confirm(message)) {
+      return; // Cancelar cierre
+    }
+  }
+
+  // Guardar sesión y confirmar cierre
+  saveSessionData();
+  setTimeout(() => {
+    ipcRenderer.send('confirm-close');
+  }, 100); // Pequeño retraso para asegurar que la sesión se guarde
 });
 
 // Atajos de teclado
@@ -811,6 +835,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// Inicializar solo con una pestaña si no hay sesión para restaurar
-// (la sesión se restaurará desde el evento 'restore-session')
-createNewTab();
+// No crear una pestaña inicial automáticamente
+// La primera pestaña se creará solo si no hay sesión para restaurar
+// o cuando la restauración de la sesión haya finalizado sin éxito
+debug('Inicializando la aplicación, esperando eventos de sesión...');
